@@ -1,5 +1,62 @@
 ## sketch
 #### 0. Define good and bad ----
+accounts <- alf_lld_select %>%
+  group_by(AccountNumber) %>%
+  summarise(ReportingDate = min(ReportingDate)) %>%
+  select(AccountNumber)
+
+accounts_combine <- alf_lld_select %>% 
+  filter(!is.na(DaysDelinquent)) %>%
+  group_by(AccountNumber) %>%
+  mutate(
+      RowNumber = row_number()
+    , CumMaxDaysDelinquent = cummax(DaysDelinquent)
+  ) %>% 
+  group_by(AccountNumber) %>%
+  filter(
+      RowNumber == n()
+    , CumMaxDaysDelinquent > default_threshold
+  ) %>%
+  bind_rows(
+    alf_lld_select %>% 
+      filter(!is.na(DaysDelinquent)) %>%
+      group_by(AccountNumber) %>%
+      mutate(
+          RowNumber = row_number()
+        , CumMaxDaysDelinquent = cummax(DaysDelinquent)
+      ) %>% 
+      group_by(AccountNumber) %>%
+      filter(
+          RowNumber == n()
+        , CumMaxDaysDelinquent <= default_threshold
+      )
+  ) %>%
+  select(AccountNumber)
+
+dplyr::setdiff(bit64::as.character.integer64(accounts$AccountNumber),
+               bit64::as.character.integer64(accounts_combine$AccountNumber))
+
+alf_lld_select %>%
+  filter(AccountNumber == 9100046904) %>%
+  mutate(
+    CumMaxDDays = cummax(DaysDelinquent)
+  ) %>%
+  View()
+
+alf_bad <- alf_lld_select %>% 
+  group_by(AccountNumber) %>%
+  mutate(
+      RowNumber = row_number()
+    , CumMaxDaysDelinquent = cummax(DaysDelinquent)
+  ) %>% 
+  group_by(AccountNumber) %>%
+  filter(
+      RowNumber == n()
+    , CumMaxDaysDelinquent <= default_threshold
+  ) %>%
+  View()
+  
+
 alf_lld_group <- alf_lld_select %>%
   group_by(
     AccountNumber
@@ -369,6 +426,80 @@ used_perf %>%
     , payment_q3 = quantile(SubsequentContractualPayment)[['75%']]
     , payment_max = max(SubsequentContractualPayment)
   )
+
+## Repo Status ----
+alf_lld_select %>%
+  select(
+      AccountNumber
+    , Vintage
+    , ReportingDate
+    , contains('repo')
+    , MonthsSinceOrig
+  ) %>%
+  group_by(
+    AccountNumber
+  ) %>%
+  filter(
+    !is.na(RepoStatus)
+  ) %>%
+  filter(
+    MonthsSinceOrig == min(MonthsSinceOrig)
+  ) %>%
+  View()
+
+## Group by FICO, compate bad ratio between different vehicle age ----
+used_perf_nestbyfico <- used_perf %>%
+  group_by(FICOBuckets) %>%
+  nest() %>%
+  arrange(FICOBuckets)
+
+names(used_perf_nestbyfico$data) <- used_perf_nestbyfico$FICOBuckets
+
+# Define function 'alf_summarise' ----
+alf_summarise <- function(df, group_var) {
+  df %>% 
+    group_by(!! group_var) %>%
+    summarise(
+        Count = n()
+      , CountBad = sum(Performance == 'Bad')
+      , BadRatio = round(CountBad / Count * 100, 2)
+      , AvgDaysDelinq = mean(DaysDelinquent)
+    )
+}
+
+alf_summarise(used_perf_nestbyfico$data[['NoScore']], quo(VehicleAge))
+
+used_perf_fico_age <- used_perf_nestbyfico %>%
+  mutate(
+      FICOBucket_Count = map_int(data, nrow)
+    , Summary_byVehicleAge = map(data, alf_summarise, quo(VehicleAge))
+    , BadRatio_BarPlots = 
+        map2(
+          .x = Summary_byVehicleAge, .y = FICOBuckets,
+          ~ ggplot(.x, aes(VehicleAge, BadRatio, fill = desc(BadRatio))) +
+              geom_col() +
+              scale_x_discrete(limits = .x$VehicleAge) +
+              labs(
+                title = str_c('"Bad Ratio" of each vehicle age group, FICO: ', .y),
+                caption = str_c('"Bad" is defined as reaching ', default_threshold, 
+                                '+DPD within first ', window_length, ' months')
+              ) + 
+              theme(legend.position="none")
+        )
+  )
+
+bar_list <- used_perf_fico_age$BadRatio_BarPlots
+names(bar_list)
+  
+multiplot(bar_list[['NoScore']], bar_list[['470-561']], bar_list[['561-582']],
+          bar_list[['582-602']], bar_list[['602-629']], bar_list[['629-867']],
+          layout = matrix(seq(1, 6, 1), ncol = 3, byrow = TRUE))
+
+
+
+
+
+
 
 
 

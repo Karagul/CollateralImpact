@@ -1,5 +1,5 @@
 ## Analysis of effect of collateral on account performance 
-# save.image(here::here('PerfCollateral.RData'))
+# load(here::here('PerfCollateral.RData'))
 
 #### 0. Load workspace and required packages ----
 
@@ -26,7 +26,7 @@ schema_orig <- 'lld'
 table_orig <- 'origination_data_apr_2018'
 
 current_month <- '2018-06-01'
-default_threshold <- 90 # 90+DPD within first 6 months as 'bad/default'
+default_threshold <- 90; window_length <- 6 # 90+DPD within first 6 months as 'bad/default'
 
 #### 1. Read and format data ----
 
@@ -59,7 +59,7 @@ alf_collateral <- alf_orig %>%
     , ProductName
   )
 
-### 1.3 Define performance threshold as reaching 60+DPD within first six months ----
+### 1.3 Define performance threshold as reaching "default_threshold" within first six months ----
 
 ## 1.3.1 Consider loans that started performance at least six months ago ----
 alf_lld_select <- alf_lld %>%
@@ -69,12 +69,16 @@ alf_lld_select <- alf_lld %>%
     , MonthsSinceOrig = interval(Vintage, ymd(ReportingDate)) %/% months(1)
   ) %>%
   filter(
-      Vintage <= ymd(current_month) %m-% months(6)
-    , MonthsSinceOrig <= 6 # define default as reach 60+DPD within first 6 months
+      Vintage <= ymd(current_month) %m-% months(window_length)
+    , MonthsSinceOrig <= window_length 
+    # define default as reach "default_threshold" within first "window_length" months
   ) 
 
 ## 1.3.2 Bad accounts based on performance threshold defined ----
 alf_bad <- alf_lld_select %>%
+  filter(
+    !is.na(DaysDelinquent) # NA will cause 'cummax' return a series of NA
+  ) %>%
   group_by(
     AccountNumber
   ) %>%
@@ -92,6 +96,9 @@ alf_bad <- alf_lld_select %>%
 
 ## 1.3.3 Good accounts based on performance threshold defined ----
 alf_good <- alf_lld_select %>%
+  filter(
+    !is.na(DaysDelinquent) # NA will cause 'cummax' return a series of NA
+  ) %>%
   group_by(
     AccountNumber
   ) %>% 
@@ -99,15 +106,9 @@ alf_good <- alf_lld_select %>%
       CumDaysDelinquent = cummax(DaysDelinquent)
     , IsDefault = ifelse(CumDaysDelinquent > default_threshold, 1, 0)
   ) %>%
-  # filter(
-  #     IsDefault == 0
-  #   , MonthsSinceOrig == 6
-  # ) %>%
   filter(
-    !cumany(CumDaysDelinquent > default_threshold) 
-  ) %>% View()
-  filter(
-    MonthsSinceOrig == max(MonthsSinceOrig)
+      MonthsSinceOrig == max(MonthsSinceOrig)
+    , IsDefault == 0
   ) %>%
   ungroup()
 
@@ -116,6 +117,10 @@ alf_performance <- alf_bad %>%
   bind_rows(alf_good)
 
 ### 1.4 Joint performance data with collateral information ----
+# Create FICO buckets using quantiles
+alf_fico <- alf_collateral$CreditScore
+fico_cuts <- quantile(alf_fico[alf_fico > 0], probs = seq(0, 1, 0.20))
+
 alf_collateral_perf <- alf_performance %>%
   mutate(AccountNumber = bit64::as.double.integer64(AccountNumber)) %>% 
   select(
@@ -124,24 +129,38 @@ alf_collateral_perf <- alf_performance %>%
     , ReportingDate
     , MonthsSinceOrig
     , DaysDelinquent
-    , IsBad = IsDefault
+    , Performance = IsDefault
   ) %>%
   left_join(
     alf_collateral,
     by = c('AccountNumber' = 'AccountNumber')
   ) %>%
   mutate(
-      IsBad = factor(IsBad, labels = c('Good', 'Bad'))
+      Performance = factor(Performance, labels = c('Good', 'Bad'))
     , VehicleType = ifelse(str_detect(ProductName, regex('^used', ignore_case = TRUE)),
                            'Used', 'New')
-  )
+    , FICOBuckets = forcats::fct_explicit_na(
+        cut(x = CreditScore, 
+            breaks = unname(fico_cuts),
+            labels = str_c(unname(fico_cuts)[-length(fico_cuts)], '-', unname(fico_cuts)[-1]),
+            include.lowest = TRUE),
+        na_level = 'NoScore'
+      )
+    , VehicleAge = as.character(VehicleAge)
+    , VehicleAge = case_when(
+        VehicleAge %in% c(0, 1) ~ '<= 1',
+        VehicleAge %in% c(6, 7) ~ '>= 6',
+        TRUE ~ VehicleAge
+      )
+    , VehicleAge = forcats::fct_relevel(VehicleAge, '<= 1', '2', '3', '4', '5', '>= 6')
+  ) 
 
 #### 2. Compare performance based on collateral info ----
 
 ### 2.1 Impact of 'VehicleType' on performance ----
-table(alf_collateral_perf[, c('IsBad', 'VehicleType')])
+table(alf_collateral_perf[, c('Performance', 'VehicleType')])
 round(
-  prop.table(table(alf_collateral_perf[, c('IsBad', 'VehicleType')]), margin = 2) * 100, 2
+  prop.table(table(alf_collateral_perf[, c('Performance', 'VehicleType')]), margin = 2) * 100, 2
 )
 
 new_perf <- alf_collateral_perf %>%
@@ -155,7 +174,7 @@ used_vage_tbl <- used_perf %>%
   group_by(VehicleAge) %>%
   summarise(
       Count = n()
-    , CountBad = sum(IsBad == 'Bad')
+    , CountBad = sum(Performance == 'Bad')
     , BadRatio = round(CountBad / Count * 100, 2)
     , AvgDaysDelinq = mean(DaysDelinquent)
   )
@@ -165,7 +184,7 @@ used_vage_tbl %>%
   ggplot(aes(VehicleAge, BadRatio, fill = desc(BadRatio))) +
   geom_col() + 
   # coord_flip() + # rotate bars 
-  scale_x_discrete(limits = vehicle_age_tbl$VehicleAge) +
+  scale_x_discrete(limits = used_vage_tbl$VehicleAge) +
   labs(
     title = '"Bad Ratio" of each vehicle age group',
     caption = '"Bad" is defined as reaching 120+DPD within first 6 months'
@@ -196,7 +215,7 @@ used_mileage_tbl <- used_perf %>%
   group_by(mileage_buckets) %>%
   summarise(
       Count = n()
-    , CountBad = sum(IsBad == 'Bad')
+    , CountBad = sum(Performance == 'Bad')
     , BadRatio = round(CountBad / Count * 100, 2)
     , AvgDaysDelinq = mean(DaysDelinquent)
   )
@@ -234,7 +253,7 @@ used_value_tbl <- used_perf %>%
   group_by(value_buckets) %>%
   summarise(
       Count = n()
-    , CountBad = sum(IsBad == 'Bad')
+    , CountBad = sum(Performance == 'Bad')
     , BadRatio = round(CountBad / Count * 100, 2)
     , AvgDaysDelinq = mean(DaysDelinquent)
   )
@@ -264,18 +283,18 @@ used_ltv_tbl <- used_perf %>%
   group_by(ltv_buckets) %>%
   summarise(
     Count = n()
-    , CountBad = sum(IsBad == 'Bad')
+    , CountBad = sum(Performance == 'Bad')
     , BadRatio = round(CountBad / Count * 100, 2)
     , AvgDaysDelinq = mean(DaysDelinquent)
   )
 
 used_perf %>%
-  rename(Performance = IsBad) %>%
+  rename(Performance = Performance) %>%
   ggplot(aes(VehicleEstimatedValue, fill = Performance)) +
   geom_density(alpha = .5, position = 'identity')
 
 used_perf %>%
-  rename(Performance = IsBad) %>%
+  rename(Performance = Performance) %>%
   ggplot(aes(LTVPct, fill = Performance)) +
   geom_density(alpha = .5, position = 'identity')
 
