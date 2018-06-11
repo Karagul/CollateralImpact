@@ -1,0 +1,149 @@
+---
+title: "Impact of collateral on loan performance"
+author: "Ang Li"
+date: "June 7, 2018"
+output:
+  html_document:
+    number_sections: true
+    toc: true
+    prettydoc::html_pretty:
+      theme: cayman
+      highlight: github
+    fig_width: 8
+    fig_height: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r LoadPackages, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(DiagrammeR)
+library(knitr)
+library(kableExtra)
+library(formattable)
+library(dbplyr)
+library(lubridate)
+library(forcats)
+library(odbc)
+library(readxl)
+library(here)
+library(xlsx)
+load(here::here('PerfCollateral.RData'))
+```
+
+# Sample used in this analysis
+
+A total 11341 loans that originated no later than **December 2017** vintage were selected. Loan performance of the first six months was considered in current analysis, and `Bad`/`Default` is defined as **reaching 60+DPD within first 6 months**.  
+
+# Collateral impact on loan performance
+
+## New vs. Used
+
+```{r NewUsed, echo=FALSE, message=FALSE, warning=FALSE}
+table(alf_collateral_perf[, c('IsBad', 'VehicleType')]) %>%
+  as.tibble() %>%
+  rename(Collateral = VehicleType) %>%
+  group_by(Collateral) %>%
+  summarise(
+      Count = sum(n)
+    , BadRatio = round(n[IsBad == 'Bad']/Count * 100, 2)
+  ) %>%
+  kable(format = 'html', escape = FALSE, align = c('c', 'c', 'c')) %>%
+  kable_styling("hover", full_width = FALSE) %>%
+  column_spec(3, width = "1cm")
+```
+
+Analysis is going to be restricted on 11130 **Used** loans in following sections.
+
+<P style="page-break-before: always">
+
+## Vehicle Age
+
+```{r vage, echo=FALSE, message=FALSE, warning=FALSE}
+used_vage_tbl %>%
+  mutate(AvgDaysDelinq = round(AvgDaysDelinq, 2)) %>%
+  kable(format = 'html', escape = FALSE, align = c('c', 'c', 'c', 'c', 'c')) %>%
+  kable_styling("hover", full_width = FALSE) %>%
+  column_spec(5, width = "1cm")
+
+used_vage_tbl %>%
+  ggplot(aes(VehicleAge, BadRatio, fill = desc(BadRatio))) +
+  geom_col() + 
+  # coord_flip() + # rotate bars 
+  scale_x_discrete(limits = vehicle_age_tbl$VehicleAge) +
+  labs(
+    title = '"Bad Ratio" of each vehicle age group',
+    caption = '"Bad" is defined as reaching 60+DPD within first 6 months'
+  ) + 
+  theme(legend.position="none")
+```
+
+<P style="page-break-before: always">
+
+## Mileage
+
+Mileage was divided into 8 buckets, each bucket has same number of loans.   
+
+```{r mileage, echo=FALSE, message=FALSE, warning=FALSE}
+used_mileage_tbl %>%
+  mutate(AvgDaysDelinq = round(AvgDaysDelinq, 2)) %>%
+  kable(format = 'html', escape = FALSE, align = c('c', 'c', 'c', 'c', 'c')) %>%
+  kable_styling("hover", full_width = FALSE) %>%
+  column_spec(5, width = "1cm")
+
+used_mileage_tbl %>%
+  ggplot(aes(mileage_buckets, BadRatio, fill = desc(BadRatio))) +
+  geom_col() + 
+  labs(
+    title = '"Bad Ratio" of each mileage bucket',
+    caption = '"Bad" is defined as reaching 60+DPD within first 6 months'
+  ) + 
+  theme(legend.position="none")
+```
+
+<P style="page-break-before: always">
+
+## Vehicle Estimated Value
+
+Vehicle estimated value was divided into 8 buckets, each bucket has same number of loans. 
+
+```{r vvalue, echo=FALSE, message=FALSE, warning=FALSE}
+used_value_tbl %>%
+  mutate(AvgDaysDelinq = round(AvgDaysDelinq, 2)) %>%
+  kable(format = 'html', escape = FALSE, align = c('c', 'c', 'c', 'c', 'c')) %>%
+  kable_styling("hover", full_width = FALSE) %>%
+  column_spec(5, width = "1cm")
+
+used_value_tbl %>%
+  ggplot(aes(value_buckets, BadRatio, fill = desc(BadRatio))) +
+  geom_col() + 
+  labs(
+    title = '"Bad Ratio" of each value bucket',
+    caption = '"Bad" is defined as reaching 60+DPD within first 6 months'
+  ) + 
+  theme(legend.position="none")
+```
+
+<P style="page-break-before: always">
+
+## Loan To Value
+
+`LTVPct` was divided into 8 buckets, each bucket has same number of loans.
+
+```{r ltv, echo=FALSE, message=FALSE, warning=FALSE}
+used_ltv_tbl %>%
+  mutate(AvgDaysDelinq = round(AvgDaysDelinq, 2)) %>%
+  kable(format = 'html', escape = FALSE, align = c('c', 'c', 'c', 'c', 'c')) %>%
+  kable_styling("hover", full_width = FALSE) %>%
+  column_spec(5, width = "1cm")
+
+used_ltv_tbl %>%
+  ggplot(aes(ltv_buckets, BadRatio, fill = desc(BadRatio))) +
+  geom_col() + 
+  labs(
+    title = '"Bad Ratio" of each LTV bucket',
+    caption = '"Bad" is defined as reaching 60+DPD within first 6 months'
+  ) + 
+  theme(legend.position="none")
+```
